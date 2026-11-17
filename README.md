@@ -45,6 +45,33 @@ $$y_{s+1}=y_s+\frac{\eta}{\varepsilon}\left(x-y_s-\tau\nabla g_\theta(y_s)\right
 ULA is approximate: its step size and number of steps must be evaluated for
 each dataset and potential geometry.
 
+## Benchmarks and evaluation
+
+VaSUOT is evaluated on three two-dimensional synthetic settings and one latent
+image-translation setting:
+
+- **Class-imbalanced Gaussian mixtures:** tests how the target KL relaxation
+  changes transported component masses.
+- **Target outlier contamination:** tests whether the solver avoids assigning
+  excessive mass to a distant target outlier.
+- **Gaussian to Swiss Roll:** tests complex transport geometry and conditional
+  stochasticity.
+- **FFHQ ALAE latent translation:** evaluates unpaired attributes such as
+  Male to Female and Adult to Child after decoding transported latents.
+
+Common metrics are paired transport cost, empirical target $W_2$, barycentric
+projection error against a numerical reference, solver/inference runtime, and
+peak memory. Synthetic experiments additionally report component mass, outlier
+mass, Energy Distance, and conditional variance. Latent image translation uses
+FID and LPIPS alongside runtime.
+
+The primary baselines are semi-unbalanced Sinkhorn, implemented with POT as a
+discrete numerical reference, and SU-EgNOT, an MCMC-trained neural solver for
+the same semi-unbalanced objective. Image translation also compares against
+the original balanced VarEOT setup. Main results are aggregated over independent
+random seeds; ablations vary $\tau$, $\varepsilon$, the Monte Carlo count $K$,
+network width, and ULA hyperparameters.
+
 ## Code layout
 
 - src/config.py - typed experiment configuration.
