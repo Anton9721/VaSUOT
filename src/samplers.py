@@ -134,6 +134,93 @@ class StandardNormalSampler(Sampler):
         )
 
 
+class GaussianMixtureSampler(Sampler):
+    """Sampler for a full-covariance Gaussian mixture.
+
+    It is shared by the class-imbalance and target-outlier benchmarks. Component
+    weights define the empirical target mass that semi-unbalanced transport may
+    deliberately not reproduce exactly.
+    """
+
+    def __init__(
+        self,
+        means: Tensor,
+        covariances: Tensor,
+        *,
+        weights: Optional[Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> None:
+        if not isinstance(means, Tensor) or not isinstance(covariances, Tensor):
+            raise TypeError("means and covariances must be torch.Tensors.")
+        if means.ndim != 2 or means.shape[0] == 0 or means.shape[1] == 0:
+            raise ValueError("means must have shape (positive_num_components, event_dim).")
+        expected_shape = (means.shape[0], means.shape[1], means.shape[1])
+        if tuple(covariances.shape) != expected_shape:
+            raise ValueError(
+                f"covariances must have shape {expected_shape}, got {tuple(covariances.shape)}."
+            )
+        if means.device != covariances.device or means.dtype != covariances.dtype:
+            raise ValueError("means and covariances must have the same device and dtype.")
+        if not torch.is_floating_point(means):
+            raise TypeError("means and covariances must have floating-point dtypes.")
+        if generator is not None and generator.device != means.device:
+            raise ValueError("generator and mixture parameters must be on the same device.")
+        if not torch.allclose(covariances, covariances.transpose(-1, -2)):
+            raise ValueError("Each covariance matrix must be symmetric.")
+
+        if weights is None:
+            normalized_weights = torch.full(
+                (means.shape[0],),
+                1.0 / means.shape[0],
+                device=means.device,
+                dtype=means.dtype,
+            )
+        else:
+            if tuple(weights.shape) != (means.shape[0],):
+                raise ValueError("weights must have one non-negative value per component.")
+            if weights.device != means.device or weights.dtype != means.dtype:
+                raise ValueError("weights must have the same device and dtype as means.")
+            if (weights < 0).any() or weights.sum() <= 0:
+                raise ValueError("weights must be non-negative and sum to a positive value.")
+            normalized_weights = weights / weights.sum()
+
+        try:
+            cholesky = torch.linalg.cholesky(covariances)
+        except RuntimeError as error:
+            raise ValueError("Every covariance matrix must be positive definite.") from error
+
+        self.means = means.detach()
+        self.cholesky = cholesky.detach()
+        self.weights = normalized_weights.detach()
+        self.generator = generator
+
+    @property
+    def event_dim(self) -> int:
+        return self.means.shape[1]
+
+    @property
+    def num_components(self) -> int:
+        return self.means.shape[0]
+
+    def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
+        _validate_batch_size(batch_size)
+        component_indices = torch.multinomial(
+            self.weights, batch_size, replacement=True, generator=self.generator
+        )
+        standard_noise = torch.randn(
+            batch_size,
+            self.event_dim,
+            device=self.means.device,
+            dtype=self.means.dtype,
+            generator=self.generator,
+        )
+        factors = self.cholesky.index_select(0, component_indices)
+        samples = self.means.index_select(0, component_indices) + torch.bmm(
+            factors, standard_noise.unsqueeze(-1)
+        ).squeeze(-1)
+        return samples if device is None else samples.to(device)
+
+
 class SwissRollSampler(Sampler):
     """Two-dimensional Swiss-roll distribution used for synthetic validation."""
 
@@ -172,4 +259,10 @@ class SwissRollSampler(Sampler):
         return (samples / self.scale).to(output_device)
 
 
-__all__ = ["Sampler", "StandardNormalSampler", "SwissRollSampler", "TensorSampler"]
+__all__ = [
+    "GaussianMixtureSampler",
+    "Sampler",
+    "StandardNormalSampler",
+    "SwissRollSampler",
+    "TensorSampler",
+]

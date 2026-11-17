@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
+import time
 import warnings
 
 import torch
@@ -24,6 +25,17 @@ class ULADiagnostics:
     mean_score_norm: float
     max_score_norm: float
     quadratic_reference_variance_ratio: float
+
+
+@dataclass(frozen=True)
+class ULARunResult:
+    """Samples and diagnostics from one ULA hyperparameter setting."""
+
+    step_size: float
+    num_steps: int
+    runtime_seconds: float
+    diagnostics: ULADiagnostics
+    samples: Tensor
 
 
 class ULASampler:
@@ -190,6 +202,67 @@ class ULASampler:
             generator=generator,
         )
 
+    @classmethod
+    def sweep(
+        cls,
+        source: Tensor,
+        potential: ScalarNetwork,
+        *,
+        eps: float,
+        tau: float,
+        step_sizes: Sequence[float],
+        num_steps_values: Sequence[int],
+        num_conditional_samples: int,
+        score_clip: Optional[float] = None,
+        seed: Optional[int] = None,
+    ) -> list[ULARunResult]:
+        """Run the Cartesian ULA sensitivity sweep from the evaluation protocol.
+
+        Each setting receives a generator reset to the same seed, so output
+        differences are attributable to step size and iteration count rather
+        than random-number stream ordering.
+        """
+        cls._validate_source(source)
+        if not step_sizes or not num_steps_values:
+            raise ValueError("step_sizes and num_steps_values must be non-empty.")
+        if not isinstance(num_conditional_samples, int) or num_conditional_samples <= 0:
+            raise ValueError("num_conditional_samples must be a positive integer.")
+
+        results: list[ULARunResult] = []
+        for step_size in step_sizes:
+            for num_steps in num_steps_values:
+                sampler = cls(
+                    eps=eps,
+                    tau=tau,
+                    step_size=step_size,
+                    num_steps=num_steps,
+                    score_clip=score_clip,
+                )
+                generator = None
+                if seed is not None:
+                    generator = torch.Generator(device=source.device)
+                    generator.manual_seed(seed)
+                _synchronize_if_cuda(source.device)
+                started_at = time.perf_counter()
+                samples = sampler.sample_conditional(
+                    source,
+                    potential,
+                    num_samples=num_conditional_samples,
+                    generator=generator,
+                )
+                _synchronize_if_cuda(source.device)
+                elapsed = time.perf_counter() - started_at
+                results.append(
+                    ULARunResult(
+                        step_size=step_size,
+                        num_steps=num_steps,
+                        runtime_seconds=elapsed,
+                        diagnostics=sampler.diagnose(samples, source, potential),
+                        samples=samples,
+                    )
+                )
+        return results
+
     @staticmethod
     def _validate_source(source: Tensor) -> None:
         if not isinstance(source, Tensor):
@@ -218,4 +291,9 @@ class ULASampler:
             raise ValueError("current and source must have the same device and dtype.")
 
 
-__all__ = ["ULADiagnostics", "ULASampler"]
+def _synchronize_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+__all__ = ["ULADiagnostics", "ULARunResult", "ULASampler"]

@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
-    from config import ModelConfig
+    from config import ModelConfig, VaSUOTConfig
 
 
 _ACTIVATIONS: dict[str, type[nn.Module]] = {
@@ -86,4 +86,28 @@ def build_scalar_mlp(config: ModelConfig) -> MLP:
     )
 
 
-__all__ = ["MLP", "build_scalar_mlp"]
+def build_potential_mlp(config: ModelConfig) -> MLP:
+    """Build the dual potential g_theta for a selected capacity ablation."""
+    return build_scalar_mlp(config)
+
+
+def build_normalizer_mlp(config: ModelConfig) -> MLP:
+    """Build the auxiliary log-normalizer xi_phi independently of g_theta."""
+    return build_scalar_mlp(config)
+
+
+def build_vasuot_networks(config: VaSUOTConfig) -> tuple[MLP, MLP]:
+    """Create independently configured potential and normalizer networks."""
+    return (
+        build_potential_mlp(config.resolved_potential_model()),
+        build_normalizer_mlp(config.resolved_normalizer_model()),
+    )
+
+
+__all__ = [
+    "MLP",
+    "build_normalizer_mlp",
+    "build_potential_mlp",
+    "build_scalar_mlp",
+    "build_vasuot_networks",
+]
