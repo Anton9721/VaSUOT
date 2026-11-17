@@ -39,21 +39,7 @@ class MLP(nn.Module):
     ) -> None:
         super().__init__()
 
-        if input_dim <= 0:
-            raise ValueError(f"input_dim must be positive, got {input_dim}.")
-        if output_dim <= 0:
-            raise ValueError(f"output_dim must be positive, got {output_dim}.")
-        if any(width <= 0 for width in hidden_dims):
-            raise ValueError("All hidden layer widths must be positive.")
-
-        activation_name = activation.lower()
-        try:
-            activation_cls = _ACTIVATIONS[activation_name]
-        except KeyError as error:
-            choices = ", ".join(sorted(_ACTIVATIONS))
-            raise ValueError(
-                f"Unsupported activation {activation!r}. Choose one of: {choices}."
-            ) from error
+        activation_cls = _ACTIVATIONS[activation.lower()]
 
         layers: list[nn.Module] = []
         previous_dim = input_dim
@@ -67,12 +53,6 @@ class MLP(nn.Module):
 
     def forward(self, inputs: Tensor) -> Tensor:
         """Evaluate the MLP while preserving every leading batch dimension."""
-        if inputs.ndim == 0:
-            raise ValueError("inputs must have a feature dimension.")
-        if inputs.shape[-1] != self.input_dim:
-            raise ValueError(
-                f"Expected final dimension {self.input_dim}, got {inputs.shape[-1]}."
-            )
         return self.network(inputs)
 
 

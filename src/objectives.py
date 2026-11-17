@@ -57,18 +57,6 @@ class SemiUnbalancedVarEOTObjective:
         num_noise_samples: int,
         exp_clip: Optional[float] = None,
     ) -> None:
-        if eps <= 0:
-            raise ValueError(f"eps must be positive, got {eps}.")
-        if tau <= 0:
-            raise ValueError(f"tau must be positive, got {tau}.")
-        if not isinstance(num_noise_samples, int) or num_noise_samples <= 0:
-            raise ValueError(
-                "num_noise_samples must be a positive integer, "
-                f"got {num_noise_samples!r}."
-            )
-        if exp_clip is not None and exp_clip <= 0:
-            raise ValueError(f"exp_clip must be positive or None, got {exp_clip}.")
-
         self.eps = float(eps)
         self.tau = float(tau)
         self.num_noise_samples = num_noise_samples
@@ -103,7 +91,6 @@ class SemiUnbalancedVarEOTObjective:
             noise: Optional standard-normal samples of shape ``(N0, K, D)``.
                 Providing it is useful for deterministic tests.
         """
-        self._validate_batches(source, target)
         if noise is None:
             noise = torch.randn(
                 source.shape[0],
@@ -112,18 +99,10 @@ class SemiUnbalancedVarEOTObjective:
                 device=source.device,
                 dtype=source.dtype,
             )
-        self._validate_noise(source, noise)
-
         perturbed_source = source[:, None, :] + (self.eps**0.5) * noise
-        g_target = self._scalar_output(potential(target), target.shape[:-1], "potential(target)")
-        xi_source = self._scalar_output(
-            normalizer(source), source.shape[:-1], "normalizer(source)"
-        )
-        g_perturbed = self._scalar_output(
-            potential(perturbed_source),
-            perturbed_source.shape[:-1],
-            "potential(perturbed_source)",
-        )
+        g_target = potential(target).squeeze(-1)
+        xi_source = normalizer(source).squeeze(-1)
+        g_perturbed = potential(perturbed_source).squeeze(-1)
 
         # Evaluate exponentials in float64. This preserves the exact gradient
         # of the objective while substantially postponing overflow relative to
@@ -168,44 +147,5 @@ class SemiUnbalancedVarEOTObjective:
             device=device,
             dtype=torch.float64,
         )
-
-    def _validate_batches(self, source: Tensor, target: Tensor) -> None:
-        for name, batch in (("source", source), ("target", target)):
-            if not isinstance(batch, Tensor):
-                raise TypeError(f"{name} must be a torch.Tensor.")
-            if batch.ndim != 2 or batch.shape[0] == 0 or batch.shape[1] == 0:
-                raise ValueError(
-                    f"{name} must have shape (positive_batch_size, positive_event_dim), "
-                    f"got {tuple(batch.shape)}."
-                )
-            if not torch.is_floating_point(batch):
-                raise TypeError(f"{name} must have a floating-point dtype.")
-        if source.shape[1] != target.shape[1]:
-            raise ValueError("source and target must have the same event dimension.")
-        if source.device != target.device:
-            raise ValueError("source and target must be on the same device.")
-        if source.dtype != target.dtype:
-            raise ValueError("source and target must have the same dtype.")
-
-    def _validate_noise(self, source: Tensor, noise: Tensor) -> None:
-        expected_shape = (source.shape[0], self.num_noise_samples, source.shape[1])
-        if not isinstance(noise, Tensor):
-            raise TypeError("noise must be a torch.Tensor.")
-        if tuple(noise.shape) != expected_shape:
-            raise ValueError(f"noise must have shape {expected_shape}, got {tuple(noise.shape)}.")
-        if noise.device != source.device or noise.dtype != source.dtype:
-            raise ValueError("noise must have the same device and dtype as source.")
-
-    @staticmethod
-    def _scalar_output(output: Tensor, leading_shape: torch.Size, name: str) -> Tensor:
-        expected_shape = (*leading_shape, 1)
-        if not isinstance(output, Tensor) or tuple(output.shape) != expected_shape:
-            observed = tuple(output.shape) if isinstance(output, Tensor) else type(output).__name__
-            raise ValueError(
-                f"{name} must return one scalar per input with shape {expected_shape}, "
-                f"got {observed}."
-            )
-        return output.squeeze(-1)
-
 
 __all__ = ["ObjectiveOutput", "SemiUnbalancedVarEOTObjective"]

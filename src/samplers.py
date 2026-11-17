@@ -26,12 +26,6 @@ class Sampler(ABC):
     def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
         """Return independent samples with shape ``(batch_size, event_dim)``."""
 
-
-def _validate_batch_size(batch_size: int) -> None:
-    if not isinstance(batch_size, int) or batch_size <= 0:
-        raise ValueError(f"batch_size must be a positive integer, got {batch_size!r}.")
-
-
 class TensorSampler(Sampler):
     """Uniform sampler over rows of an in-memory empirical dataset.
 
@@ -48,19 +42,6 @@ class TensorSampler(Sampler):
         replacement: bool = True,
         generator: Optional[torch.Generator] = None,
     ) -> None:
-        if not isinstance(data, Tensor):
-            raise TypeError("data must be a torch.Tensor.")
-        if data.ndim != 2:
-            raise ValueError(
-                f"data must have shape (num_samples, event_dim), got {tuple(data.shape)}."
-            )
-        if data.shape[0] == 0:
-            raise ValueError("data must contain at least one sample.")
-        if data.shape[1] == 0:
-            raise ValueError("data must have a positive event dimension.")
-        if generator is not None and generator.device != data.device:
-            raise ValueError("generator and data must be on the same device.")
-
         self._data = data.detach()
         self.replacement = replacement
         self.generator = generator
@@ -74,12 +55,6 @@ class TensorSampler(Sampler):
         return self._data.shape[0]
 
     def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
-        _validate_batch_size(batch_size)
-        if not self.replacement and batch_size > self.num_samples:
-            raise ValueError(
-                "batch_size cannot exceed dataset size when replacement=False."
-            )
-
         if self.replacement:
             indices = torch.randint(
                 self.num_samples,
@@ -109,8 +84,6 @@ class StandardNormalSampler(Sampler):
         dtype: torch.dtype = torch.float32,
         generator: Optional[torch.Generator] = None,
     ) -> None:
-        if event_dim <= 0:
-            raise ValueError(f"event_dim must be positive, got {event_dim}.")
         self._event_dim = event_dim
         self.device = torch.device(device)
         self.dtype = dtype
@@ -121,10 +94,7 @@ class StandardNormalSampler(Sampler):
         return self._event_dim
 
     def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
-        _validate_batch_size(batch_size)
         output_device = self.device if device is None else torch.device(device)
-        if self.generator is not None and self.generator.device != output_device:
-            raise ValueError("generator and sampling device must be the same.")
         return torch.randn(
             batch_size,
             self.event_dim,
@@ -150,24 +120,6 @@ class GaussianMixtureSampler(Sampler):
         weights: Optional[Tensor] = None,
         generator: Optional[torch.Generator] = None,
     ) -> None:
-        if not isinstance(means, Tensor) or not isinstance(covariances, Tensor):
-            raise TypeError("means and covariances must be torch.Tensors.")
-        if means.ndim != 2 or means.shape[0] == 0 or means.shape[1] == 0:
-            raise ValueError("means must have shape (positive_num_components, event_dim).")
-        expected_shape = (means.shape[0], means.shape[1], means.shape[1])
-        if tuple(covariances.shape) != expected_shape:
-            raise ValueError(
-                f"covariances must have shape {expected_shape}, got {tuple(covariances.shape)}."
-            )
-        if means.device != covariances.device or means.dtype != covariances.dtype:
-            raise ValueError("means and covariances must have the same device and dtype.")
-        if not torch.is_floating_point(means):
-            raise TypeError("means and covariances must have floating-point dtypes.")
-        if generator is not None and generator.device != means.device:
-            raise ValueError("generator and mixture parameters must be on the same device.")
-        if not torch.allclose(covariances, covariances.transpose(-1, -2)):
-            raise ValueError("Each covariance matrix must be symmetric.")
-
         if weights is None:
             normalized_weights = torch.full(
                 (means.shape[0],),
@@ -176,18 +128,9 @@ class GaussianMixtureSampler(Sampler):
                 dtype=means.dtype,
             )
         else:
-            if tuple(weights.shape) != (means.shape[0],):
-                raise ValueError("weights must have one non-negative value per component.")
-            if weights.device != means.device or weights.dtype != means.dtype:
-                raise ValueError("weights must have the same device and dtype as means.")
-            if (weights < 0).any() or weights.sum() <= 0:
-                raise ValueError("weights must be non-negative and sum to a positive value.")
             normalized_weights = weights / weights.sum()
 
-        try:
-            cholesky = torch.linalg.cholesky(covariances)
-        except RuntimeError as error:
-            raise ValueError("Every covariance matrix must be positive definite.") from error
+        cholesky = torch.linalg.cholesky(covariances)
 
         self.means = means.detach()
         self.cholesky = cholesky.detach()
@@ -203,7 +146,6 @@ class GaussianMixtureSampler(Sampler):
         return self.means.shape[0]
 
     def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
-        _validate_batch_size(batch_size)
         component_indices = torch.multinomial(
             self.weights, batch_size, replacement=True, generator=self.generator
         )
@@ -232,10 +174,6 @@ class SwissRollSampler(Sampler):
         device: torch.device | str = "cpu",
         seed: Optional[int] = None,
     ) -> None:
-        if noise < 0:
-            raise ValueError(f"noise must be non-negative, got {noise}.")
-        if scale <= 0:
-            raise ValueError(f"scale must be positive, got {scale}.")
         self.noise = noise
         self.scale = scale
         self.device = torch.device(device)
@@ -248,7 +186,6 @@ class SwissRollSampler(Sampler):
         return 2
 
     def sample(self, batch_size: int, *, device: Optional[torch.device | str] = None) -> Tensor:
-        _validate_batch_size(batch_size)
         output_device = self.device if device is None else torch.device(device)
         t = 1.5 * torch.pi * (1 + 2 * torch.rand(batch_size, generator=self._generator))
         samples = torch.stack((t * torch.cos(t), t * torch.sin(t)), dim=1)

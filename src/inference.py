@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 import time
-import warnings
 
 import torch
 from torch import Tensor
@@ -59,34 +58,11 @@ class ULASampler:
         num_steps: int,
         score_clip: Optional[float] = None,
     ) -> None:
-        if eps <= 0:
-            raise ValueError(f"eps must be positive, got {eps}.")
-        if tau <= 0:
-            raise ValueError(f"tau must be positive, got {tau}.")
-        if step_size <= 0:
-            raise ValueError(f"step_size must be positive, got {step_size}.")
-        if not isinstance(num_steps, int) or num_steps < 0:
-            raise ValueError(f"num_steps must be a non-negative integer, got {num_steps!r}.")
-        if score_clip is not None and score_clip <= 0:
-            raise ValueError(f"score_clip must be positive or None, got {score_clip}.")
-
         self.eps = float(eps)
         self.tau = float(tau)
         self.step_size = float(step_size)
         self.num_steps = num_steps
         self.score_clip = score_clip
-        if score_clip is not None:
-            warnings.warn(
-                "score_clip modifies the ULA transition kernel and therefore its target "
-                "distribution. Use it only as an explicitly evaluated numerical safeguard.",
-                stacklevel=2,
-            )
-        if step_size >= 2.0 * eps:
-            warnings.warn(
-                "step_size >= 2 * eps is unstable even for the quadratic reference "
-                "case g(y)=0. Decrease step_size before running ULA.",
-                stacklevel=2,
-            )
 
     @classmethod
     def from_config(
@@ -103,19 +79,10 @@ class ULASampler:
 
     def score(self, current: Tensor, source: Tensor, potential: ScalarNetwork) -> Tensor:
         """Evaluate ``∇_y log q(y | x)`` for current states of shape ``(B, K, D)``."""
-        self._validate_source(source)
-        self._validate_current(current, source)
-
         # ULA needs ∇g even when callers wrap evaluation in torch.no_grad().
         with torch.enable_grad():
             state = current.detach().requires_grad_(True)
             potential_value = potential(state)
-            expected_shape = (*state.shape[:-1], 1)
-            if not isinstance(potential_value, Tensor) or tuple(potential_value.shape) != expected_shape:
-                observed = tuple(potential_value.shape) if isinstance(potential_value, Tensor) else type(potential_value).__name__
-                raise ValueError(
-                    f"potential must return shape {expected_shape}, got {observed}."
-                )
             gradient = torch.autograd.grad(
                 potential_value.sum(), state, create_graph=False, retain_graph=False
             )[0]
@@ -158,17 +125,10 @@ class ULASampler:
 
         Returns a tensor of shape ``(batch_size, num_samples, event_dim)``.
         """
-        self._validate_source(source)
-        if not isinstance(num_samples, int) or num_samples <= 0:
-            raise ValueError(f"num_samples must be a positive integer, got {num_samples!r}.")
-        if generator is not None and generator.device != source.device:
-            raise ValueError("generator and source must be on the same device.")
-
         expected_shape = (source.shape[0], num_samples, source.shape[1])
         if initial is None:
             current = source[:, None, :].expand(expected_shape).clone()
         else:
-            self._validate_current(initial, source, num_samples=num_samples)
             current = initial.detach().clone()
 
         noise_scale = (2.0 * self.step_size) ** 0.5
@@ -222,12 +182,6 @@ class ULASampler:
         differences are attributable to step size and iteration count rather
         than random-number stream ordering.
         """
-        cls._validate_source(source)
-        if not step_sizes or not num_steps_values:
-            raise ValueError("step_sizes and num_steps_values must be non-empty.")
-        if not isinstance(num_conditional_samples, int) or num_conditional_samples <= 0:
-            raise ValueError("num_conditional_samples must be a positive integer.")
-
         results: list[ULARunResult] = []
         for step_size in step_sizes:
             for num_steps in num_steps_values:
@@ -262,34 +216,6 @@ class ULASampler:
                     )
                 )
         return results
-
-    @staticmethod
-    def _validate_source(source: Tensor) -> None:
-        if not isinstance(source, Tensor):
-            raise TypeError("source must be a torch.Tensor.")
-        if source.ndim != 2 or source.shape[0] == 0 or source.shape[1] == 0:
-            raise ValueError(
-                "source must have shape (positive_batch_size, positive_event_dim), "
-                f"got {tuple(source.shape)}."
-            )
-        if not torch.is_floating_point(source):
-            raise TypeError("source must have a floating-point dtype.")
-
-    @staticmethod
-    def _validate_current(
-        current: Tensor, source: Tensor, *, num_samples: Optional[int] = None
-    ) -> None:
-        if not isinstance(current, Tensor):
-            raise TypeError("current must be a torch.Tensor.")
-        if current.ndim != 3:
-            raise ValueError("current must have shape (batch_size, num_samples, event_dim).")
-        expected_num_samples = current.shape[1] if num_samples is None else num_samples
-        expected_shape = (source.shape[0], expected_num_samples, source.shape[1])
-        if tuple(current.shape) != expected_shape:
-            raise ValueError(f"current must have shape {expected_shape}, got {tuple(current.shape)}.")
-        if current.device != source.device or current.dtype != source.dtype:
-            raise ValueError("current and source must have the same device and dtype.")
-
 
 def _synchronize_if_cuda(device: torch.device) -> None:
     if device.type == "cuda":

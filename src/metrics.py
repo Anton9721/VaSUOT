@@ -90,8 +90,6 @@ def conditional_variance(conditional_samples: ArrayLike) -> float:
     """Estimate E_x[tr Cov(y|x)] using the unbiased sample covariance."""
     samples = _conditional_samples(conditional_samples)
     num_conditional_samples = samples.shape[1]
-    if num_conditional_samples < 2:
-        raise ValueError("At least two conditional samples per source point are required.")
     centered = samples - samples.mean(dim=1, keepdim=True)
     trace_covariance = centered.square().sum(dim=2).sum(dim=1) / (
         num_conditional_samples - 1
@@ -114,15 +112,11 @@ def energy_distance(
     off-diagonal pairs, yielding an unbiased finite-sample estimator before the
     final non-negativity clamp.
     """
-    _validate_chunk_size(chunk_size)
     first_tensor, second_tensor = _sample_sets(first, second, "first", "second")
     first_tensor = _subsample(first_tensor, max_samples=max_samples, seed=seed)
     second_tensor = _subsample(
         second_tensor, max_samples=max_samples, seed=None if seed is None else seed + 1
     )
-    if first_tensor.shape[0] < 2 or second_tensor.shape[0] < 2:
-        raise ValueError("Energy Distance needs at least two samples in each set.")
-
     cross = _mean_pairwise_distance(first_tensor, second_tensor, chunk_size=chunk_size)
     first_within = _mean_pairwise_distance(
         first_tensor, first_tensor, exclude_diagonal=True, chunk_size=chunk_size
@@ -156,17 +150,11 @@ def outlier_region_mass(samples: ArrayLike, predicate: OutlierPredicate) -> floa
     """
     sample_tensor = _as_samples(samples, "samples")
     mask = predicate(sample_tensor)
-    if not isinstance(mask, Tensor) or mask.dtype != torch.bool or tuple(mask.shape) != (
-        sample_tensor.shape[0],
-    ):
-        raise ValueError("predicate must return a boolean tensor with shape (num_samples,).")
     return float(mask.to(torch.float64).mean())
 
 
 def ball_outlier_mass(samples: ArrayLike, center: ArrayLike, radius: float) -> float:
     """Estimate mass inside a Euclidean ball used as a declared outlier region."""
-    if radius <= 0:
-        raise ValueError(f"radius must be positive, got {radius}.")
     sample_tensor = _as_samples(samples, "samples")
     center_tensor = _as_vector(center, event_dim=sample_tensor.shape[1], name="center")
     distances = (sample_tensor - center_tensor).square().sum(dim=1).sqrt()
@@ -177,21 +165,10 @@ def aggregate_runs(
     runs: Sequence[Mapping[str, float]], *, ddof: int = 1
 ) -> dict[str, MetricSummary]:
     """Aggregate identically keyed metric dictionaries from independent seeds."""
-    if not runs:
-        raise ValueError("runs must contain at least one metric dictionary.")
     metric_names = set(runs[0])
-    if not metric_names:
-        raise ValueError("metric dictionaries must not be empty.")
-    if any(set(run) != metric_names for run in runs):
-        raise ValueError("Every run must report exactly the same metric names.")
-    if ddof < 0 or ddof >= len(runs):
-        raise ValueError("ddof must satisfy 0 <= ddof < number of runs.")
-
     summaries: dict[str, MetricSummary] = {}
     for name in sorted(metric_names):
         values = np.asarray([run[name] for run in runs], dtype=np.float64)
-        if not np.isfinite(values).all():
-            raise ValueError(f"Metric {name!r} contains NaN or infinity.")
         summaries[name] = MetricSummary(
             mean=float(values.mean()),
             std=float(values.std(ddof=ddof)),
@@ -201,40 +178,21 @@ def aggregate_runs(
 
 
 def _as_samples(values: ArrayLike, name: str) -> Tensor:
-    tensor = _to_float64_cpu(values, name)
-    if tensor.ndim != 2 or tensor.shape[0] == 0 or tensor.shape[1] == 0:
-        raise ValueError(
-            f"{name} must have shape (positive_num_samples, positive_event_dim), "
-            f"got {tuple(tensor.shape)}."
-        )
-    return tensor
+    return _to_float64_cpu(values, name)
 
 
 def _as_vector(values: ArrayLike, *, event_dim: int, name: str) -> Tensor:
-    tensor = _to_float64_cpu(values, name)
-    if tensor.ndim != 1 or tensor.shape[0] != event_dim:
-        raise ValueError(f"{name} must have shape ({event_dim},), got {tuple(tensor.shape)}.")
-    return tensor
+    return _to_float64_cpu(values, name)
 
 
 def _conditional_samples(values: ArrayLike) -> Tensor:
-    tensor = _to_float64_cpu(values, "conditional_samples")
-    if tensor.ndim != 3 or 0 in tensor.shape:
-        raise ValueError(
-            "conditional_samples must have shape "
-            f"(positive_num_sources, positive_num_samples, positive_event_dim), got {tuple(tensor.shape)}."
-        )
-    return tensor
+    return _to_float64_cpu(values, "conditional_samples")
 
 
 def _paired_samples(
     first: ArrayLike, second: ArrayLike, first_name: str, second_name: str
 ) -> tuple[Tensor, Tensor]:
     first_tensor, second_tensor = _sample_sets(first, second, first_name, second_name)
-    if first_tensor.shape[0] != second_tensor.shape[0]:
-        raise ValueError(
-            f"{first_name} and {second_name} must contain the same number of paired samples."
-        )
     return first_tensor, second_tensor
 
 
@@ -243,8 +201,6 @@ def _sample_sets(
 ) -> tuple[Tensor, Tensor]:
     first_tensor = _as_samples(first, first_name)
     second_tensor = _as_samples(second, second_name)
-    if first_tensor.shape[1] != second_tensor.shape[1]:
-        raise ValueError(f"{first_name} and {second_name} must have the same event dimension.")
     return first_tensor, second_tensor
 
 
@@ -254,17 +210,13 @@ def _to_float64_cpu(values: ArrayLike, name: str) -> Tensor:
     elif isinstance(values, np.ndarray):
         tensor = torch.as_tensor(values, device="cpu", dtype=torch.float64)
     else:
-        raise TypeError(f"{name} must be a torch.Tensor or numpy.ndarray.")
-    if not torch.isfinite(tensor).all():
-        raise ValueError(f"{name} contains NaN or infinity.")
+        tensor = torch.as_tensor(values, device="cpu", dtype=torch.float64)
     return tensor
 
 
 def _subsample(samples: Tensor, *, max_samples: int | None, seed: int | None) -> Tensor:
     if max_samples is None or samples.shape[0] <= max_samples:
         return samples
-    if max_samples <= 0:
-        raise ValueError(f"max_samples must be positive or None, got {max_samples}.")
     generator = torch.Generator(device="cpu")
     if seed is not None:
         generator.manual_seed(seed)
@@ -287,14 +239,7 @@ def _mean_pairwise_distance(
             distances[torch.arange(stop - start), local_indices] = 0.0
         total += distances.sum()
         count += distances.numel() - (stop - start if same_tensor else 0)
-    if count <= 0:
-        raise ValueError("At least two samples are needed for off-diagonal distances.")
     return float(total / count)
-
-
-def _validate_chunk_size(chunk_size: int) -> None:
-    if not isinstance(chunk_size, int) or chunk_size <= 0:
-        raise ValueError(f"chunk_size must be a positive integer, got {chunk_size!r}.")
 
 
 __all__ = [

@@ -54,10 +54,6 @@ def build_optimizer(
 ) -> torch.optim.Optimizer:
     """Construct the optimizer currently supported by the experiment config."""
     parameter_list = list(parameters)
-    if not parameter_list:
-        raise ValueError("Cannot build an optimizer with no trainable parameters.")
-    if config.name.lower() != "adamw":
-        raise ValueError(f"Unsupported optimizer {config.name!r}; only 'adamw' is supported.")
     return torch.optim.AdamW(
         parameter_list,
         lr=config.learning_rate,
@@ -87,17 +83,6 @@ class VaSUOTTrainer:
         ema_momentum: float = 0.999,
         track_peak_memory: bool = True,
     ) -> None:
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be positive, got {batch_size}.")
-        if grad_clip_norm is not None and grad_clip_norm <= 0:
-            raise ValueError(
-                f"grad_clip_norm must be positive or None, got {grad_clip_norm}."
-            )
-        if not 0.0 <= ema_momentum < 1.0:
-            raise ValueError(
-                f"ema_momentum must lie in [0, 1), got {ema_momentum}."
-            )
-
         self.device = torch.device(device)
         self.potential = potential.to(self.device)
         self.normalizer = normalizer.to(self.device)
@@ -113,13 +98,6 @@ class VaSUOTTrainer:
         self.best_validation: ValidationMetrics | None = None
 
         self._parameters = list(self.potential.parameters()) + list(self.normalizer.parameters())
-        if not self._parameters:
-            raise ValueError("potential and normalizer must contain trainable parameters.")
-        potential_ids = {id(parameter) for parameter in self.potential.parameters()}
-        normalizer_ids = {id(parameter) for parameter in self.normalizer.parameters()}
-        if potential_ids & normalizer_ids:
-            raise ValueError("potential and normalizer must not share trainable parameters.")
-
         self.ema_potential = copy.deepcopy(self.potential).eval()
         for parameter in self.ema_potential.parameters():
             parameter.requires_grad_(False)
@@ -168,14 +146,9 @@ class VaSUOTTrainer:
 
         self.optimizer.zero_grad()
         objective_output = self.objective(source, target, self.potential, self.normalizer)
-        self._ensure_finite_loss(objective_output)
         objective_output.loss.backward()
 
         gradient_norm = self._gradient_norm_and_clip()
-        if not torch.isfinite(gradient_norm):
-            self.optimizer.zero_grad()
-            raise FloatingPointError("Encountered a non-finite gradient norm; optimizer step skipped.")
-
         self.optimizer.step()
         self._update_ema()
         self._synchronize_if_cuda()
@@ -204,20 +177,6 @@ class VaSUOTTrainer:
         checkpoint_callback: Optional[CheckpointCallback] = None,
     ) -> list[TrainStepMetrics]:
         """Run ``num_steps`` updates and return the metrics produced in this call."""
-        if not isinstance(num_steps, int) or num_steps <= 0:
-            raise ValueError(f"num_steps must be a positive integer, got {num_steps!r}.")
-        if validation_callback is None and (
-            validation_every is not None or monitor is not None or checkpoint_callback is not None
-        ):
-            raise ValueError("Validation settings require validation_callback.")
-        if validation_callback is not None:
-            if validation_every is None or validation_every <= 0:
-                raise ValueError("validation_every must be positive when validation_callback is set.")
-            if monitor is None:
-                raise ValueError("monitor must name a validation metric when validation_callback is set.")
-            if monitor_mode not in {"min", "max"}:
-                raise ValueError("monitor_mode must be either 'min' or 'max'.")
-
         metrics_for_run: list[TrainStepMetrics] = []
         for _ in range(num_steps):
             metrics = self.train_step(source_sampler, target_sampler)
@@ -268,11 +227,6 @@ class VaSUOTTrainer:
         self, callback: ValidationCallback, train_metrics: TrainStepMetrics
     ) -> ValidationMetrics:
         values = dict(callback(self, train_metrics))
-        if not values:
-            raise ValueError("validation_callback must return at least one metric.")
-        for name, value in values.items():
-            if not isinstance(value, (float, int)) or not torch.isfinite(torch.tensor(value)):
-                raise ValueError(f"Validation metric {name!r} must be finite.")
         return ValidationMetrics(
             step=self.step,
             values={name: float(value) for name, value in values.items()},
@@ -281,20 +235,11 @@ class VaSUOTTrainer:
     def _is_best(
         self, validation: ValidationMetrics, monitor: str, monitor_mode: str
     ) -> bool:
-        if monitor not in validation.values:
-            raise KeyError(f"Validation callback did not return monitored metric {monitor!r}.")
-        if self.best_validation is None or monitor not in self.best_validation.values:
+        if self.best_validation is None:
             return True
         current = validation.values[monitor]
         previous = self.best_validation.values[monitor]
         return current < previous if monitor_mode == "min" else current > previous
-
-    @staticmethod
-    def _ensure_finite_loss(output: ObjectiveOutput) -> None:
-        if output.loss.ndim != 0:
-            raise ValueError(f"objective loss must be scalar, got shape {tuple(output.loss.shape)}.")
-        if not torch.isfinite(output.loss):
-            raise FloatingPointError("Encountered a non-finite objective loss; optimizer step skipped.")
 
     def _to_metrics(
         self,
