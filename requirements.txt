@@ -11,6 +11,7 @@ papermill
 ipython
 imageio
 packaging
+POT
 yacs
 dlutils
 bimpy>=0.1.1
