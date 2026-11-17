@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Excluded from repo
+EgEOT_ALAE/
+src/
+vareot_archive.tar.gz
+checkpoints/
+data/gender.npy
+data/latents.npy
+data/test_images.npy
+data/age.npy
